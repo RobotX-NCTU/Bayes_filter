@@ -33,22 +33,25 @@ class gps_kalman_node():
 		self.id = 0
 	def gps_cb(self, data):
 		if self.lock == 0:
-			self.latitude = data.latitude
-			self.longitude = data.longitude
+			self.latitude = data.latitude*110574
+			self.longitude = data.longitude*111320*0.915
 			self.altitude = data.altitude
 			self.covariance = data.position_covariance
-		self.started = 1
+		
 	def process(self):
-		if self.started == 0:
-			# initialize prior
-			self.prior_lat = norm(loc = 24, scale = 1000)
-			self.prior_long = norm(loc = 121, scale = 1000)
-			self.prior_alt = norm(loc = 180, scale = 1000)
-			return
 		if self.init_latitude == -1 and self.latitude != -1:
 			self.init_latitude = self.latitude
 			self.init_longitude = self.longitude
 			self.init_altitude = self.altitude
+			return
+		if self.started == 0 and self.init_latitude != -1 :
+			# initialize prior
+			self.prior_lat = norm(loc = self.init_latitude, scale = 100)
+			self.prior_long = norm(loc = self.init_longitude, scale = 100)
+			self.prior_alt = norm(loc = self.init_altitude, scale = 100)
+			self.started = 1
+			return
+		if self.started == 0:
 			return
 		#print self.latitude-self.init_latitude
 		self.lock = 1
@@ -58,25 +61,36 @@ class gps_kalman_node():
 		covariance = self.covariance
 		self.lock = 0
 		#print latitude, longitude, altitude
-		posterior_lat = self.update_con(self.prior_lat, latitude, covariance[4]/(110574*110574))
-		posterior_long = self.update_con(self.prior_long, longitude, covariance[0]/(111320*0.915*111320*0.915))
-		posterior_alt = self.update_con(self.prior_alt, altitude, covariance[8])
+
+
+		#prediction step
+		kernel = norm(loc = 0, scale = 0.08)
+		predicted_lat = norm(loc = self.prior_lat.mean()+kernel.mean(), scale = np.sqrt(self.prior_lat.var()+kernel.var()))
+		predicted_long = norm(loc = self.prior_long.mean()+kernel.mean(), scale = np.sqrt(self.prior_long.var()+kernel.var()))
+		predicted_alt = norm(loc = self.prior_alt.mean()+kernel.mean(), scale = np.sqrt(self.prior_alt.var()+kernel.var()))
+		#update step
+		posterior_lat = self.update_con(predicted_lat, latitude, covariance[4])
+		posterior_long = self.update_con(predicted_long, longitude, covariance[0])
+		posterior_alt = self.update_con(predicted_alt, altitude, covariance[8])
 		self.prior_lat = posterior_lat
 		self.prior_long = posterior_long
 		self.prior_alt = posterior_alt
 
-		print "lat:", (posterior_lat.mean()-self.init_latitude)*110574, posterior_lat.var()*110574*110574
-		print "long:", (posterior_long.mean()-self.init_longitude)*111320*0.915, posterior_long.var()*111320*0.915*111320*0.915
+		
+
+
+		print "lat:", (posterior_lat.mean()-self.init_latitude), posterior_lat.var()
+		print "long:", (posterior_long.mean()-self.init_longitude), posterior_long.var()
 		print "alt:", (posterior_alt.mean()-self.init_altitude), posterior_alt.var()
-		#print "lat:",  covariance[0]
-		#print "long:", covariance[4]
+		#print "lat:",  covariance[4]
+		#print "long:", covariance[0]
 		#print "alt:", covariance[8]
 
 		## Draw marker
 		
 		marker = Marker(type=Marker.SPHERE, \
 			id=self.id, lifetime=rospy.Duration(), \
-			pose=Pose(Point(float((posterior_lat.mean()-self.init_latitude)*110574), float((posterior_long.mean()-self.init_longitude)*111320*0.915), float(posterior_alt.mean()-self.init_altitude)), \
+			pose=Pose(Point(float((posterior_lat.mean()-self.init_latitude)), float((posterior_long.mean()-self.init_longitude)), float(posterior_alt.mean()-self.init_altitude)), \
 			Quaternion(0, 0, 0, 1)),\
 			scale=Vector3(0.3, 0.3, 0.3),\
 			header=Header(frame_id='gps'),\
@@ -84,19 +98,19 @@ class gps_kalman_node():
 		self.marker_pub.publish(marker)
 		
 		marker_cov = Marker(type=Marker.SPHERE, \
-			id=self.id+10000, lifetime=rospy.Duration(0.5), \
-			pose=Pose(Point(float((posterior_lat.mean()-self.init_latitude)*110574), float((posterior_long.mean()-self.init_longitude)*111320*0.915), float(posterior_alt.mean()-self.init_altitude)), \
+			id=self.id+10000, lifetime=rospy.Duration(0.1), \
+			pose=Pose(Point(float((posterior_lat.mean()-self.init_latitude)), float((posterior_long.mean()-self.init_longitude)), float(posterior_alt.mean()-self.init_altitude)), \
 			Quaternion(0, 0, 0, 1)),\
 			#scale=Vector3(np.sqrt(covariance[4]), np.sqrt(covariance[0]), np.sqrt(covariance[8])),\
-			scale=Vector3(np.sqrt(posterior_lat.var()*110574*110574), np.sqrt(posterior_long.var()*111320*0.915*111320*0.915), np.sqrt(posterior_alt.var())), \
+			scale=Vector3(np.sqrt(posterior_lat.var()), np.sqrt(posterior_long.var()), np.sqrt(posterior_alt.var())), \
 			header=Header(frame_id='gps'),\
-			color=ColorRGBA(1, 0.6, 0.8, 0.05))
+			color=ColorRGBA(1, 0.6, 0.8, 0.3))
 		self.marker_cov_pub.publish(marker_cov)
 
 
 		marker_raw = Marker(type=Marker.SPHERE, \
 			id=self.id+200000, lifetime=rospy.Duration(), \
-			pose=Pose(Point(float((latitude-self.init_latitude)*110574), float((longitude-self.init_longitude)*111320*0.915), float(altitude-self.init_altitude)), \
+			pose=Pose(Point(float((latitude-self.init_latitude)), float((longitude-self.init_longitude)), float(altitude-self.init_altitude)), \
 			Quaternion(0, 0, 0, 1)),\
 			scale=Vector3(0.3, 0.3, 0.3),\
 			header=Header(frame_id='gps'),\
@@ -129,7 +143,7 @@ def main():
 	try:
 		while(1):
 			ic.process()
-			rospy.sleep(1)
+			rospy.sleep(0.1)
 	except KeyboardInterrupt:
 		print("Shutting down")
 
